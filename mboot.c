@@ -240,7 +240,7 @@ int pack()
 	} else if (hdr_data) {
 		unsigned char *imgtype_buffer = malloc(4);
 		memcpy(imgtype_buffer, bootimg + 52, 4);
-		uint32_t imgtype = *(uint32_t *)imgtype_buffer + 1;
+		uint32_t imgtype = *(uint32_t *)imgtype_buffer|0x01;
 		memcpy(bootimg + 52, &imgtype, 4);
 	}
 
