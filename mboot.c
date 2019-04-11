@@ -20,13 +20,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <ctype.h>
 #include <limits.h>
 #include <errno.h>
 #include <sys/stat.h>
 
 char *directory = "./";
 char *filename = "boot.img";
+int debug = 0;
 
 int usage(int val)
 {
@@ -43,30 +43,33 @@ int usage(int val)
 	return val;
 }
 
+// use custom functions since it seems libc isalnum() cannot be trusted cross-platform
+int xisalpha(int c) { return ((unsigned int)(c|('A'^'a')) - 'a') <= 'z'-'a'; }  
+int xisdigit(int c) { return ((unsigned int)(c - '0')) < 10; } 
+int xisalnum(int c) { return (xisalpha(c) || xisdigit(c)); }
+
 int check_byte(FILE *f, int size, int min)
 {
-	int origsize = size;
 	unsigned char *tmp = malloc(size);
-	unsigned char *skip = malloc(1);
-
-	// try skipping first byte if \x00 to hopefully avoid false positives with isalnum()
-	if (size > 1) {
-		if (fread(skip, 1, 1, f)) {};
-		if (!memcmp(skip, "\x00", 1)) {
-			size = size - 1;
-		} else {
-			fseek(f, -1, SEEK_CUR);
-		}
-	}
+	int bytes = 0;
 
 	if (fread(tmp, size, 1, f)) {};
-	fseek(f, -origsize, SEEK_CUR);
+	fseek(f, -size, SEEK_CUR);
 
-	int bytes = isalnum(*tmp);
-	//printf("%4d: %d\n", ftell(f), bytes);
+	int i;
+	for (i = 0; i < size; i++) {
+		bytes = bytes + xisalnum((int)tmp[i]);
+		if (debug > 1) {
+			printf("%d 0x%02X\n", bytes, tmp[i]);
+		}
+	}
+	free(tmp);
+	if (debug) {
+		printf("%4ld: %d\n", ftell(f), bytes);
+	}
 
-	// add custom fault tolerance to try and avoid false positives with isalnum()
-	if (bytes > min && bytes < origsize) {
+	// add custom fault tolerance to try and avoid false positives
+	if (bytes >= min) {
 		return 1;
 	} else {
 		return 0;
@@ -84,6 +87,7 @@ void write_buffer(FILE *f, int size, char *name)
 	if (fread(buffer, size, 1, f)) {};
 	fwrite(buffer, size, 1, t);
 	fclose(t);
+	free(buffer);
 }
 
 void write_string(char *string, char *name)
@@ -106,7 +110,7 @@ int unpack()
 	}
 
 	// header is 512 bytes but may rarely not exist on some devices
-	if (!check_byte(f, 4, 1)) {
+	if (!check_byte(f, 1, 1)) {
 		write_buffer(f, 512, "hdr");
 	}
 	int hdr_size = ftell(f);
@@ -117,7 +121,7 @@ int unpack()
 	int i;
 	for (i = 0; i < (sizeof(sig_deltas) / sizeof(sig_deltas[0])); i++) {
 		fseek(f, sig_deltas[i], SEEK_CUR);
-		if (check_byte(f, 4, 1)) {
+		if (check_byte(f, 4, 4)) {
 			break;
 		}
 	}
@@ -143,7 +147,7 @@ int unpack()
 
 	// bootstub is 4096 bytes but can be 8192 bytes on some devices
 	fseek(f, 4096, SEEK_CUR);
-	if (check_byte(f, 2, 0)) {
+	if (check_byte(f, 2, 1)) {
 		fseek(f, 4096, SEEK_CUR);
 	}
 	int bootstub_size = ftell(f) - hdr_size - sig_size - 4096;
@@ -153,7 +157,7 @@ int unpack()
 
 	uint32_t kernel_size = *(uint32_t *)kernel_size_buffer;
 	if (kernel_size < 500000 || kernel_size > 15000000) {
-		fprintf(stderr, "mboot: unpacking error: kernel size likely wrong");
+		fprintf(stderr, "mboot: unpacking error: kernel size likely wrong\n");
 		return 1;
 	}
 	write_buffer(f, kernel_size, "kernel");
@@ -161,7 +165,7 @@ int unpack()
 
 	uint32_t ramdisk_size = *(uint32_t *)ramdisk_size_buffer;
 	if (ramdisk_size < 10000 || ramdisk_size > 300000000) {
-		fprintf(stderr, "mboot: unpacking error: ramdisk size likely wrong");
+		fprintf(stderr, "mboot: unpacking error: ramdisk size likely wrong\n");
 		return 1;
 	}
 	write_buffer(f, ramdisk_size, "ramdisk.cpio.gz");
@@ -242,6 +246,7 @@ int pack()
 		memcpy(imgtype_buffer, bootimg + 52, 4);
 		uint32_t imgtype = *(uint32_t *)imgtype_buffer|0x01;
 		memcpy(bootimg + 52, &imgtype, 4);
+		free(imgtype_buffer);
 	}
 
 	// add cmdline, image info (kernel and ramdisk sizes), and parameter to their 4096 byte block
@@ -271,6 +276,7 @@ int pack()
 			xor ^= hdr_calc[i];
 		}
 		memcpy(bootimg + 7, &xor, 1);
+		free(hdr_calc);
 	}
 
 	fwrite(bootimg, img_size + padding_size, 1, f);
@@ -281,7 +287,7 @@ int pack()
 
 int main(int argc, char **argv)
 {
-	int unpackbool = 0;
+	int unpackimg = 0;
 
 	argc--;
 	argv++;
@@ -290,7 +296,15 @@ int main(int argc, char **argv)
 		if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
 			return usage(0);
 		} else if (!strcmp(arg, "-u") || !strcmp(arg, "--unpack")) {
-			unpackbool = 1;
+			unpackimg = 1;
+			argc -= 1;
+			argv += 1;
+		} else if (!strcmp(arg, "--debug")) {
+			debug = 1;
+			argc -= 1;
+			argv += 1;
+		} else if (!strcmp(arg, "--debug-more")) {
+			debug = 2;
 			argc -= 1;
 			argv += 1;
 		} else if (argc >= 2) {
@@ -319,7 +333,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (unpackbool) {
+	if (unpackimg) {
 		return unpack();
 	} else {
 		return pack();
