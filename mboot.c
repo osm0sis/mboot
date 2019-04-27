@@ -69,11 +69,7 @@ int check_byte(FILE *f, int size, int min)
 	}
 
 	// add custom fault tolerance to try and avoid false positives
-	if (bytes >= min) {
-		return 1;
-	} else {
-		return 0;
-	}
+	return (bytes >= min);
 }
 
 void write_buffer(FILE *f, int size, char *name)
